@@ -23,12 +23,20 @@ names, and line numbers where possible. Do not give vague or generic feedback.
 
 ## How to run this review
 
+ALWAYS produce both a markdown file AND a PDF file. This is mandatory — not
+optional, not conditional on the user asking. Every review ends with two
+downloaded files presented to the user. Never finish by printing the report
+inline as chat text only.
+
+Steps:
 1. Read all uploaded source files thoroughly before writing anything.
 2. Detect the agent level (see Level Detection below).
 3. Work through each of the six domains using the level-appropriate strictness.
-4. For each check, give a verdict: PASS / FAIL / WARN / NOT FOUND / N/A.
-5. Produce the structured report at the end.
-6. Give an overall verdict: READY / NOT READY / CONDITIONALLY READY.
+4. For each check, assign a verdict: PASS / FAIL / WARN / NOT FOUND / N/A.
+5. Write the full report to `/mnt/user-data/outputs/code-review-REPO.md`.
+6. Run the PDF script (see Output Format) to produce `/mnt/user-data/outputs/code-review-REPO.pdf`.
+7. Call present_files with BOTH file paths — .md first, then .pdf.
+8. Post a one-paragraph summary in chat — do NOT repeat the full report inline.
 
 If source files are not yet uploaded, ask the user to share them before proceeding.
 If the user explicitly states the level ("this is an L2 agent"), use that.
@@ -349,26 +357,44 @@ CONDITIONALLY READY: No critical failures, but [N] warnings present.
 Proceed with caution. Address WARN items within [timeframe].
 ```
 
-### Step 2 — Generate the PDF report
+### Step 2 — Generate the PDF report (MANDATORY)
 
-Run the bundled PDF generation script, passing the markdown file path:
+This step is not optional. Run immediately after saving the markdown file.
+Do not skip, do not wait to be asked, do not mention it as a future option.
 
 ```bash
 pip install reportlab --break-system-packages -q
 python /home/claude/ops-agent-code-review/scripts/generate_pdf.py \
-  --input /mnt/user-data/outputs/code-review-{repo-name}.md \
-  --output /mnt/user-data/outputs/code-review-{repo-name}.pdf
+  --input /mnt/user-data/outputs/code-review-REPO.md \
+  --output /mnt/user-data/outputs/code-review-REPO.pdf
 ```
 
-### Step 3 — Present both files
+Replace REPO with a short slug from the repo or agent name (e.g. `ops-agent`, `gfit-agent`).
 
-Use `present_files` to deliver both outputs:
-```
+If the script fails:
+1. Print the error message in full.
+2. Check reportlab is installed: `pip install reportlab --break-system-packages`
+3. Check the markdown file was written: `ls -la /mnt/user-data/outputs/`
+4. Retry once. If it still fails, tell the user and offer the markdown file alone.
+Never silently skip the PDF without informing the user.
+
+### Step 3 — Present both files (MANDATORY)
+
+Call present_files immediately after the PDF is generated.
+Both files must be presented — markdown first, then PDF.
+
+```python
 present_files([
-  "/mnt/user-data/outputs/code-review-{repo-name}.md",
-  "/mnt/user-data/outputs/code-review-{repo-name}.pdf"
+  "/mnt/user-data/outputs/code-review-REPO.md",
+  "/mnt/user-data/outputs/code-review-REPO.pdf"
 ])
 ```
+
+Then post a 3–5 sentence summary in chat covering:
+- Overall verdict
+- Number of critical failures
+- The single most important fix
+Do NOT repeat the full report inline — the files contain the full detail.
 
 ---
 
