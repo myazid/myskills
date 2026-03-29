@@ -1,1 +1,1 @@
-1. Operation Agent Code Review Production Readiness - /ops-agent-code-review
+Operation Agent Code Review Production Readiness - /ops-agent-code-review

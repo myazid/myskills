@@ -24,12 +24,102 @@ names, and line numbers where possible. Do not give vague or generic feedback.
 ## How to run this review
 
 1. Read all uploaded source files thoroughly before writing anything.
-2. Work through each of the six domains below in order.
-3. For each check, give a verdict: PASS / FAIL / WARN / NOT FOUND.
-4. Produce the structured report at the end.
-5. Give an overall verdict: READY / NOT READY / CONDITIONALLY READY.
+2. Detect the agent level (see Level Detection below).
+3. Work through each of the six domains using the level-appropriate strictness.
+4. For each check, give a verdict: PASS / FAIL / WARN / NOT FOUND / N/A.
+5. Produce the structured report at the end.
+6. Give an overall verdict: READY / NOT READY / CONDITIONALLY READY.
 
 If source files are not yet uploaded, ask the user to share them before proceeding.
+If the user explicitly states the level ("this is an L2 agent"), use that.
+Otherwise, auto-detect from the code using the rules below.
+
+---
+
+## Level Detection
+
+Before running any domain checks, determine the agent level by scanning the code
+for these signals. State your detected level and evidence at the top of the report.
+
+**Signals for L1 — Assisted:**
+- No autonomous action execution paths (no tool calls, no Jira creation, no state mutation beyond logging)
+- Every issue routes to a human notification with no auto-close or auto-resolve logic
+- Classifier output is stored/displayed but never used to trigger an action
+- Typical pattern: ingest → classify → log → notify human → stop
+
+**Signals for L2 — Semi Autonomous:**
+- Autonomous action execution exists BUT is gated by severity or action_type checks
+- Some issues are auto-resolved (low severity) while others require human approval
+- Clarification loop present — agent asks operator questions and waits for reply
+- Approval handler present — supervisor can approve/reject via card or message
+- Typical pattern: ingest → classify → [auto-resolve OR escalate for approval]
+
+**Signals for L3 — Supervised Autonomous:**
+- Autonomous resolution covers severity 1–3 (not just 4–5)
+- Cross-team correlation logic present
+- Proactive scheduling or trend detection present
+- VP-level escalation path exists but is rarely triggered
+- Typical pattern: most issues handled end-to-end autonomously, exceptions escalated
+
+**If signals are mixed or ambiguous:** apply the HIGHER level's strictness and
+note the ambiguity. It is always safer to over-check than under-check.
+
+---
+
+## Domain applicability by level
+
+Use this table to determine which checks are REQUIRED (blocks go-live if failed),
+RECOMMENDED (warn but don't block), or N/A (not applicable at this level).
+
+| Domain | Check | L1 | L2 | L3 |
+|---|---|---|---|---|
+| 1 | Hardcoded action allowlist | N/A | REQUIRED | REQUIRED |
+| 1 | Sev 1 hardcoded to human | N/A | REQUIRED | REQUIRED |
+| 1 | Kill switch | N/A | REQUIRED | REQUIRED |
+| 1 | LLM failure → escalate | RECOMMENDED | REQUIRED | REQUIRED |
+| 1 | Schema validation on LLM output | RECOMMENDED | REQUIRED | REQUIRED |
+| 1 | Injection resistance | RECOMMENDED | REQUIRED | REQUIRED |
+| 1 | Log-before-act | RECOMMENDED | REQUIRED | REQUIRED |
+| 2 | Secrets in vault | REQUIRED | REQUIRED | REQUIRED |
+| 2 | Message sanitisation | RECOMMENDED | REQUIRED | REQUIRED |
+| 2 | Prompt injection protection | RECOMMENDED | REQUIRED | REQUIRED |
+| 2 | LLM response as untrusted | RECOMMENDED | REQUIRED | REQUIRED |
+| 2 | Bot token scope | REQUIRED | REQUIRED | REQUIRED |
+| 2 | Jira token scope | RECOMMENDED | REQUIRED | REQUIRED |
+| 2 | Outbound webhook validation | RECOMMENDED | REQUIRED | REQUIRED |
+| 3 | Log-before-act | RECOMMENDED | REQUIRED | REQUIRED |
+| 3 | Audit captures full fields | RECOMMENDED | REQUIRED | REQUIRED |
+| 3 | Audit append-only | RECOMMENDED | REQUIRED | REQUIRED |
+| 3 | LLM decisions logged | REQUIRED | REQUIRED | REQUIRED |
+| 3 | Human approvals logged | N/A | REQUIRED | REQUIRED |
+| 3 | App Insights wired | RECOMMENDED | REQUIRED | REQUIRED |
+| 3 | Failed LLM calls logged | RECOMMENDED | REQUIRED | REQUIRED |
+| 4 | Retry logic on LLM calls | RECOMMENDED | REQUIRED | REQUIRED |
+| 4 | Dead-letter queue | RECOMMENDED | REQUIRED | REQUIRED |
+| 4 | Handles null LLM response | RECOMMENDED | REQUIRED | REQUIRED |
+| 4 | Jira API downtime handled | RECOMMENDED | REQUIRED | REQUIRED |
+| 4 | Deduplication | REQUIRED | REQUIRED | REQUIRED |
+| 4 | SLA timer durability | N/A | REQUIRED | REQUIRED |
+| 4 | Idempotent consumer | RECOMMENDED | REQUIRED | REQUIRED |
+| 5 | Escalation hierarchy correct | REQUIRED | REQUIRED | REQUIRED |
+| 5 | SLA timeout auto-escalates | N/A | REQUIRED | REQUIRED |
+| 5 | Rejection routes to operator | N/A | REQUIRED | REQUIRED |
+| 5 | Approval routes to action | N/A | REQUIRED | REQUIRED |
+| 5 | Brief refreshed at each tier | N/A | RECOMMENDED | REQUIRED |
+| 5 | Correct person notified | REQUIRED | REQUIRED | REQUIRED |
+| 5 | No infinite escalation loop | RECOMMENDED | REQUIRED | REQUIRED |
+| 6 | Persistent issue ID | RECOMMENDED | REQUIRED | REQUIRED |
+| 6 | Durable conversation state | N/A | REQUIRED | REQUIRED |
+| 6 | Reply vs new issue detection | N/A | REQUIRED | REQUIRED |
+| 6 | Duplicate approval protection | N/A | REQUIRED | REQUIRED |
+| 6 | State transition validation | RECOMMENDED | REQUIRED | REQUIRED |
+| 6 | Max clarification limit | N/A | REQUIRED | REQUIRED |
+| 6 | Closed issue blocks actions | N/A | REQUIRED | REQUIRED |
+| 6 | Orphaned state detection | RECOMMENDED | RECOMMENDED | REQUIRED |
+
+**REQUIRED** = FAIL verdict blocks go-live.
+**RECOMMENDED** = WARN verdict, does not block go-live but should be fixed.
+**N/A** = skip this check entirely, mark as N/A in the report table.
 
 ---
 
@@ -139,13 +229,21 @@ Key checks to perform:
 
 ## Output Format
 
-After completing all six domains, produce this exact report structure:
+After completing all six domains, generate **both** a markdown report and a PDF report.
+
+### Step 1 — Write the markdown report
+
+Save to `/mnt/user-data/outputs/code-review-{repo-name}.md` using this structure:
 
 ```
 # Code Review Report — [Agent Name / Repo]
 Reviewed: [date]
 Reviewer: Claude (ops-agent-code-review skill)
 Files reviewed: [list]
+
+Detected agent level: L1 Assisted / L2 Semi Autonomous / L3 Supervised Autonomous
+Evidence: [one sentence citing the specific code signals that determined the level]
+Override: [state if user explicitly specified the level instead of auto-detected]
 
 ---
 
@@ -160,7 +258,7 @@ Verdict: PASS / FAIL / WARN
 
 | Check | Verdict | Location | Notes |
 |---|---|---|---|
-| Hardcoded action allowlist | PASS/FAIL/WARN/NOT FOUND | file:line | detail |
+| Hardcoded action allowlist | PASS/FAIL/WARN/NOT FOUND/N/A | file:line | detail |
 | Sev 1 hardcoded to human | ... | ... | ... |
 | Kill switch in config | ... | ... | ... |
 | LLM failure → escalate | ... | ... | ... |
@@ -188,36 +286,21 @@ Critical failures:
 ## Domain 3 — Audit Trail + Observability
 Verdict: PASS / FAIL / WARN
 
-| Check | Verdict | Location | Notes |
-|---|---|---|---|
 [same table structure]
-
-Critical failures:
-- [list any FAILs]
 
 ---
 
 ## Domain 4 — Reliability + Error Handling
 Verdict: PASS / FAIL / WARN
 
-| Check | Verdict | Location | Notes |
-|---|---|---|---|
 [same table structure]
-
-Critical failures:
-- [list any FAILs]
 
 ---
 
 ## Domain 5 — Escalation Logic Correctness
 Verdict: PASS / FAIL / WARN
 
-| Check | Verdict | Location | Notes |
-|---|---|---|---|
 [same table structure]
-
-Critical failures:
-- [list any FAILs]
 
 ---
 
@@ -266,6 +349,27 @@ CONDITIONALLY READY: No critical failures, but [N] warnings present.
 Proceed with caution. Address WARN items within [timeframe].
 ```
 
+### Step 2 — Generate the PDF report
+
+Run the bundled PDF generation script, passing the markdown file path:
+
+```bash
+pip install reportlab --break-system-packages -q
+python /home/claude/ops-agent-code-review/scripts/generate_pdf.py \
+  --input /mnt/user-data/outputs/code-review-{repo-name}.md \
+  --output /mnt/user-data/outputs/code-review-{repo-name}.pdf
+```
+
+### Step 3 — Present both files
+
+Use `present_files` to deliver both outputs:
+```
+present_files([
+  "/mnt/user-data/outputs/code-review-{repo-name}.md",
+  "/mnt/user-data/outputs/code-review-{repo-name}.pdf"
+])
+```
+
 ---
 
 ## Verdict definitions
@@ -281,17 +385,15 @@ Proceed with caution. Address WARN items within [timeframe].
 
 **If only partial code is shared:** Note which files are missing. Mark all
 checks that depend on missing files as NOT FOUND. Do not assume absent code
-is correct.
+is correct. Treat NOT FOUND as FAIL for REQUIRED checks.
 
 **If the code is in a language other than Python:** Apply the same checks —
 the patterns are language-agnostic. Adjust file/function references accordingly.
 
-**If the agent is L1 (Assisted):** Domains 1 and 5 still apply fully.
-Domain 6 applies at reduced criticality — state matters but no autonomous
-actions make state errors less dangerous.
-Domains 2, 3, 4 apply with reduced criticality since no autonomous actions execute.
+**If level is ambiguous:** Apply the higher level's requirements. State the
+ambiguity in the report. It is always safer to over-check than under-check.
 
-**If the agent is L3 (Supervised Autonomous):** Apply all six domains with
-maximum strictness. Flag anything that could allow the agent to act without
-a human ever being notified. Domain 6 is especially critical at L3 — a state
-bug that causes a closed issue to re-execute is a serious production incident.
+**If the user says "just check if it works" without specifying a level:**
+Auto-detect, state the detected level clearly, and apply that level's table.
+Do not silently apply L2 strictness to an L1 agent — it will generate
+misleading FAILs on checks that are genuinely not applicable.
