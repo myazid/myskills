@@ -362,21 +362,129 @@ Proceed with caution. Address WARN items within [timeframe].
 This step is not optional. Run immediately after saving the markdown file.
 Do not skip, do not wait to be asked, do not mention it as a future option.
 
+The script does not exist on disk in a new conversation — write it first,
+then run it. Use the exact bash block below, replacing REPO with a short
+slug (e.g. `ops-agent`, `gfit-agent`).
+
 ```bash
 pip install reportlab --break-system-packages -q
-python /home/claude/ops-agent-code-review/scripts/generate_pdf.py \
+
+cat > /tmp/gen_pdf.py << 'PYSCRIPT'
+import argparse, re
+from datetime import datetime
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+
+C_PURPLE=colors.HexColor("#534AB7"); C_PURPLE_LIGHT=colors.HexColor("#EEEDFE")
+C_TEAL=colors.HexColor("#0F6E56"); C_TEAL_LIGHT=colors.HexColor("#E1F5EE")
+C_RED=colors.HexColor("#A32D2D"); C_RED_LIGHT=colors.HexColor("#FCEBEB")
+C_AMBER=colors.HexColor("#854F0B"); C_AMBER_LIGHT=colors.HexColor("#FAEEDA")
+C_GRAY=colors.HexColor("#5F5E5A"); C_GRAY_LIGHT=colors.HexColor("#F1EFE8")
+C_BORDER=colors.HexColor("#D3D1C7"); C_WHITE=colors.white; C_BLACK=colors.HexColor("#2C2C2A")
+REPORT_TITLE="GFIT Agent Production Readiness Report"
+FOOTER_TEXT="GFIT Agent Production Readiness Report — Confidential"
+VERDICT_COLORS={"PASS":(C_TEAL,C_TEAL_LIGHT),"FAIL":(C_RED,C_RED_LIGHT),"WARN":(C_AMBER,C_AMBER_LIGHT),"NOT FOUND":(C_GRAY,C_GRAY_LIGHT),"N/A":(C_GRAY,C_GRAY_LIGHT),"READY":(C_TEAL,C_TEAL_LIGHT),"NOT READY":(C_RED,C_RED_LIGHT),"CONDITIONALLY READY":(C_AMBER,C_AMBER_LIGHT)}
+
+def make_styles():
+    return {"title":ParagraphStyle("title",fontSize=22,fontName="Helvetica-Bold",textColor=C_BLACK,spaceAfter=4,leading=28),"h1":ParagraphStyle("h1",fontSize=14,fontName="Helvetica-Bold",textColor=C_BLACK,spaceBefore=18,spaceAfter=6,leading=18),"h2":ParagraphStyle("h2",fontSize=12,fontName="Helvetica-Bold",textColor=C_PURPLE,spaceBefore=14,spaceAfter=4,leading=16),"body":ParagraphStyle("body",fontSize=9,fontName="Helvetica",textColor=C_BLACK,spaceAfter=4,leading=13),"body_small":ParagraphStyle("body_small",fontSize=8,fontName="Helvetica",textColor=C_GRAY,spaceAfter=3,leading=11),"bullet":ParagraphStyle("bullet",fontSize=9,fontName="Helvetica",textColor=C_BLACK,spaceAfter=3,leading=13,leftIndent=12)}
+
+def verdict_banner(verdict,styles):
+    fg,bg=VERDICT_COLORS.get(verdict.upper(),(C_GRAY,C_GRAY_LIGHT))
+    cell=Paragraph(f"<b>Overall Verdict: {verdict}</b>",ParagraphStyle("vb2",fontSize=13,fontName="Helvetica-Bold",textColor=fg,leading=16))
+    t=Table([[cell]],colWidths=[170*mm])
+    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),bg),("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),("LEFTPADDING",(0,0),(-1,-1),14),("BOX",(0,0),(-1,-1),1,fg)]))
+    return t
+
+def domain_table(rows,styles):
+    def hcell(t): return Paragraph(f"<b>{t}</b>",ParagraphStyle("th",fontSize=8,fontName="Helvetica-Bold",textColor=C_WHITE,leading=10))
+    def bcell(t): return Paragraph(str(t),ParagraphStyle("td",fontSize=8,fontName="Helvetica",textColor=C_BLACK,leading=11))
+    def vcell(v):
+        fg,bg=VERDICT_COLORS.get(v.upper(),(C_GRAY,C_GRAY_LIGHT))
+        return Paragraph(f"<b>{v}</b>",ParagraphStyle("vd",fontSize=8,fontName="Helvetica-Bold",textColor=fg,leading=10))
+    data=[[hcell(h) for h in ["Check","Verdict","Location","Notes"]]]
+    row_colors=[]
+    for i,row in enumerate(rows):
+        v=row.get("verdict","").strip()
+        _,bg=VERDICT_COLORS.get(v.upper(),(C_WHITE,C_WHITE))
+        row_colors.append(("BACKGROUND",(0,i+1),(-1,i+1),bg if v.upper()=="FAIL" else C_WHITE))
+        data.append([bcell(row.get("check","")),vcell(v),Paragraph(row.get("location","—"),ParagraphStyle("loc",fontSize=7,fontName="Courier",textColor=C_PURPLE,leading=10)),bcell(row.get("notes",""))])
+    t=Table(data,colWidths=[52*mm,22*mm,38*mm,52*mm],repeatRows=1)
+    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),C_PURPLE),("GRID",(0,0),(-1,-1),0.4,C_BORDER),("TOPPADDING",(0,0),(-1,-1),4),("BOTTOMPADDING",(0,0),(-1,-1),4),("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),("VALIGN",(0,0),(-1,-1),"TOP"),("ROWBACKGROUNDS",(0,1),(-1,-1),[C_WHITE,C_GRAY_LIGHT])]+row_colors))
+    return t
+
+def parse_markdown(md,styles):
+    story=[]; lines=md.split("\n"); i=0; table_rows=[]; in_table=False
+    def flush(rows):
+        parsed=[]
+        for row in rows:
+            cells=[c.strip() for c in row.strip("|").split("|")]
+            if len(cells)>=2 and not all(set(c)<=set("-: ") for c in cells):
+                parsed.append({"check":cells[0] if len(cells)>0 else "","verdict":cells[1] if len(cells)>1 else "","location":cells[2] if len(cells)>2 else "","notes":cells[3] if len(cells)>3 else ""})
+        return parsed
+    while i<len(lines):
+        line=lines[i]
+        if line.strip().startswith("|") and not in_table: in_table=True; table_rows=[line]; i+=1; continue
+        if in_table:
+            if line.strip().startswith("|"): table_rows.append(line); i+=1; continue
+            else:
+                parsed=flush(table_rows[2:])
+                if parsed: story.extend([Spacer(1,4),domain_table(parsed,styles),Spacer(1,6)])
+                in_table=False; table_rows=[]
+        if line.startswith("# ") and not line.startswith("## "): story.append(Paragraph(line[2:].strip(),styles["title"])); i+=1; continue
+        if line.startswith("## "):
+            text=line[3:].strip()
+            if text.startswith("Overall Verdict:"): story.extend([Spacer(1,6),verdict_banner(text.replace("Overall Verdict:","").strip(),styles),Spacer(1,10)]); i+=1; continue
+            story.append(Paragraph(text,styles["h1"])); i+=1; continue
+        if line.startswith("### "): story.append(Paragraph(line[4:].strip(),styles["h2"])); i+=1; continue
+        if line.strip()=="---": story.extend([Spacer(1,4),HRFlowable(width="100%",thickness=0.5,color=C_BORDER,spaceAfter=4)]); i+=1; continue
+        if line.startswith("- "): story.append(Paragraph(f"• {line[2:].strip()}",styles["bullet"])); i+=1; continue
+        m=re.match(r"^(\d+)\. (.+)",line)
+        if m: story.append(Paragraph(f"{m.group(1)}. {m.group(2)}",styles["bullet"])); i+=1; continue
+        if re.match(r"^[A-Z][a-zA-Z ]+: .+",line): story.append(Paragraph(line.strip(),styles["body_small"])); i+=1; continue
+        if line.strip()=="": story.append(Spacer(1,4)); i+=1; continue
+        story.append(Paragraph(line.strip(),styles["body"])); i+=1
+    if in_table and table_rows:
+        parsed=flush(table_rows[2:])
+        if parsed: story.append(domain_table(parsed,styles))
+    return story
+
+def make_cover_banner(styles):
+    t=Table([[Paragraph(REPORT_TITLE,ParagraphStyle("ct",fontSize=16,fontName="Helvetica-Bold",textColor=C_WHITE,leading=20))],[Paragraph("Code Review &amp; Production Readiness Assessment",ParagraphStyle("cs",fontSize=9,fontName="Helvetica",textColor=colors.HexColor("#CECBF6"),leading=12))]],colWidths=[170*mm])
+    t.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,-1),C_PURPLE),("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),("LEFTPADDING",(0,0),(-1,-1),14)]))
+    return [t,Spacer(1,14)]
+
+def add_page_decorations(canvas,doc):
+    w,h=A4; canvas.saveState()
+    band_h=14*mm; canvas.setFillColor(C_PURPLE); canvas.rect(0,h-band_h,w,band_h,fill=1,stroke=0)
+    canvas.setFont("Helvetica-Bold",10); canvas.setFillColor(C_WHITE); canvas.drawString(20*mm,h-band_h+4*mm,REPORT_TITLE)
+    canvas.setFont("Helvetica",8); canvas.setFillColor(colors.HexColor("#CECBF6")); canvas.drawRightString(w-20*mm,h-band_h+4*mm,f"Page {doc.page}")
+    canvas.setStrokeColor(C_BORDER); canvas.setLineWidth(0.4); canvas.line(20*mm,18*mm,w-20*mm,18*mm)
+    canvas.setFont("Helvetica",7); canvas.setFillColor(C_GRAY); canvas.drawString(20*mm,12*mm,FOOTER_TEXT); canvas.drawRightString(w-20*mm,12*mm,f"Generated {datetime.now().strftime('%Y-%m-%d')}")
+    canvas.restoreState()
+
+parser=argparse.ArgumentParser(); parser.add_argument("--input",required=True); parser.add_argument("--output",required=True); args=parser.parse_args()
+with open(args.input,"r",encoding="utf-8") as f: md=f.read()
+styles=make_styles(); story=make_cover_banner(styles)+parse_markdown(md,styles)
+doc=SimpleDocTemplate(args.output,pagesize=A4,leftMargin=20*mm,rightMargin=20*mm,topMargin=30*mm,bottomMargin=22*mm,title=REPORT_TITLE,author="Claude — ops-agent-code-review skill")
+doc.build(story,onFirstPage=add_page_decorations,onLaterPages=add_page_decorations)
+print(f"PDF written to: {args.output}")
+PYSCRIPT
+
+python /tmp/gen_pdf.py \
   --input /mnt/user-data/outputs/code-review-REPO.md \
   --output /mnt/user-data/outputs/code-review-REPO.pdf
 ```
 
-Replace REPO with a short slug from the repo or agent name (e.g. `ops-agent`, `gfit-agent`).
+Replace REPO in both `--input` and `--output` with the actual repo slug before running.
 
 If the script fails:
-1. Print the error message in full.
-2. Check reportlab is installed: `pip install reportlab --break-system-packages`
-3. Check the markdown file was written: `ls -la /mnt/user-data/outputs/`
-4. Retry once. If it still fails, tell the user and offer the markdown file alone.
-Never silently skip the PDF without informing the user.
+1. Print the full error message.
+2. Check the markdown file exists: `ls -la /mnt/user-data/outputs/`
+3. Retry once. If it still fails, tell the user and deliver the markdown alone.
+Never silently skip the PDF without telling the user why.
 
 ### Step 3 — Present both files (MANDATORY)
 
